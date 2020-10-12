@@ -1,9 +1,85 @@
 let baseUrl = '';
 let authToken = '';
+let refreshToken = '';
 let fromLang = '';
 let known_words = 0;
 let unknown_words = 0;
 
+const fetchPlus = (url, options = {}, retries) =>
+  fetch(url, options)
+    .then(res => {
+      if (res.ok) {
+        return res.json()
+      }
+      if (res.status == 401) {
+        const fetchInfo = {
+          method: "POST",
+          cache: "no-store",
+          body: JSON.stringify({ refresh: refreshToken }),
+          headers: { "Accept": "application/json", "Content-Type": "application/json" },
+        };
+        fetch(baseUrl + 'api/token/refresh/', fetchInfo)
+          .then(res => {
+            if (res.ok) {
+              return res.json();
+            }
+            throw new Error(res.status);
+          })
+          .then(data => {
+            if (data.access) {
+              authToken = data.access;
+              options.headers.Authorization = "Bearer " + authToken;
+              return fetchPlus(url, options, retries - 1);
+            }
+          }).catch((err) => {
+            console.log(err);
+          });
+      }
+
+      if (retries > 0) {
+        return fetchPlus(url, options, retries - 1)
+      }
+      throw new Error(res.status)
+    })
+    .catch(error => console.error(error.message));
+
+
+// the callback function that will be fired when the element apears in the viewport
+function onEntry(entry) {
+  entry.forEach((change) => {
+    if (!change.isIntersecting) return;
+    if (change.target.dataset && change.target.dataset.tced) return;
+
+    change.target.childNodes.forEach(function(item) {
+        if (item.nodeType == 3) {
+          const fetchInfo = {
+            method: "POST",
+            cache: "no-store",
+            body: JSON.stringify({ data: item.nodeValue }),
+            headers: {
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + authToken
+            },
+          };
+
+          fetchPlus(baseUrl + 'enrich/enrich_json', fetchInfo)
+            .then(data => {
+              enrichElement(item, data, pops);
+              change.target.dataset.tced = true;
+            }).catch((err) => {
+              console.log(err);
+            });
+       }
+     });
+  });
+}
+
+let observer = new IntersectionObserver(onEntry, { threshold: [0.9] });
+
+// FIXME: this should not be here but rather in an external CSS
+// that is horrible for development though, so this is being used for the moment
+//
 // Style for elements
 const tcrobeEntry = 'padding-left: 6px; position: relative; cursor: pointer; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none; user-select: none;';
 // FIXME: now we have only one floating popup, this needs to be revisited
@@ -21,6 +97,9 @@ const tcrobeDefBest = 'box-sizing: border-box; float: left; width: 60%; padding:
 const tcrobeDefSentbutton = 'box-sizing: border-box; float: left; width: 50%; padding: 2px;';
 const tcrobeStats = 'margin-left: 6px; padding: 5px 0;';
 // End style for elements
+
+const pops = doCreateElement('span', 'tcrobe-def-popup', null, [['style', tcrobeDefPopup]], document.body);
+pops.attributes.id = 'dapopsicle';
 
 function toEnrich(charstr) {
   // TODO: find out why the results are different if these consts are global...
@@ -74,9 +153,6 @@ function textNodes(node) {
 
 function walkNodeTree(root, options) {
   options = options || {};
-
-  console.log(root);
-  console.log(options);
   const inspect = options.inspect || (n => true),
     collect = options.collect || (n => true);
   const walker = document.createTreeWalker(
@@ -129,19 +205,19 @@ function sendNoteToApi(apiVerb, note, addNew, target, previousImg) {
     headers: { "Accept": "application/json", "Content-Type": "application/json", 'Authorization': 'Bearer ' + authToken },
   };
 
-  fetch(baseUrl + 'notes/' + apiVerb, fetchInfo)
+  fetchPlus(baseUrl + 'notes/' + apiVerb, fetchInfo)
     .then(res => {
       const msg = document.getElementsByClassName('tcrobe-def-messages')[0];
       msg.style.display = "block";
       target.src = previousImg;
-      if (!res.ok) {
+      if (res.status != "ok") {
         msg.innerHTML = "Update failed. Please try again later.";
       } else {
         note['Is_Known'] = 1;  // FIXME: does this do anything?
         cleanupAfterNoteUpdate(addNew, note.Simplified);
         msg.innerHTML = "Update succeeded";
         setTimeout(() => msg.style.display = "none", 3000);
-      }      
+      }
     }).catch((err) => {
       console.log(err);
       apiUnavailable();
@@ -173,9 +249,9 @@ function popupDefinitions(token, popupContainer) {
   const defs = token['definitions'];
   for (var source in defs) {
     const sources = defs[source];
-    // this MUST be assigned to a const or something weird happens and the ref changes to the last item in the loop for all 
+    // this MUST be assigned to a const or something weird happens and the ref changes to the last item in the loop for all
     // addEventListener events
-    const fixedSource = source;  
+    const fixedSource = source;
     popupContainer.appendChild(doCreateElement('hr', 'tcrobe-def-hr', null, null));
     const defSource = doCreateElement('div', 'tcrobe-def-source', null, [['style', tcrobeDefSource]], popupContainer);
     const defSourceHeader = doCreateElement('div', 'tcrobe-def-source-header', null, [['style', tcrobeDefSourceHeader]], defSource);
@@ -184,13 +260,13 @@ function popupDefinitions(token, popupContainer) {
 
     if (!(token['ankrobes_entry']) || !(token['ankrobes_entry'].length)) {
       // add add note button
-      doCreateElement('img', "tcrobe-def-plus", null, [["src", chrome.runtime.getURL('/img/plus.png')], 
-        ['style', 'display: inline; width:32px; height:32px; padding:3px;']], defSourceIcons).addEventListener("click", 
+      doCreateElement('img', "tcrobe-def-plus", null, [["src", chrome.runtime.getURL('/img/plus.png')],
+        ['style', 'display: inline; width:32px; height:32px; padding:3px;']], defSourceIcons).addEventListener("click",
           (event) => addOrUpdateNote(event, token, fixedSource, true)
         );
     }
     // add update note button
-    doCreateElement('img', "tcrobe-def-good", null, [["src", chrome.runtime.getURL('/img/good.png')], 
+    doCreateElement('img', "tcrobe-def-good", null, [["src", chrome.runtime.getURL('/img/good.png')],
       ['style', 'display: inline; width:32px; height:32px; padding:3px;']], defSourceIcons).addEventListener("click",
           (event) => addOrUpdateNote(event, token, fixedSource, false)
       );
@@ -244,14 +320,14 @@ function doCreateElement(elType, elClass, elInnerText, elAttrs, elParent) {
 function initPopup(event, popup) {
   event.stopPropagation();
   // this allows to have the popup on links and if click again then the link will activate
-  if (popup.style.display == "none") event.preventDefault(); 
+  if (popup.style.display == "none") event.preventDefault();
 
   // place the popup just under the clicked item
   const width = parseInt(popup.style.width, 10);
   if (event.pageX < (width / 2)) {
     popup.style.left = '0px';
-  } else { 
-    popup.style.left = (event.pageX - (width / 2)) + 'px'; 
+  } else {
+    popup.style.left = (event.pageX - (width / 2)) + 'px';
   }
 
   popup.style.top = (event.pageY + 20) + 'px';
@@ -321,35 +397,15 @@ function enrichElement(element, data, pops) {
   }
 }
 
-function enrichDocument(callback, msg) {
-  let known_words = 0;
-  let unknown_words = 0;
-
-  const pops = doCreateElement('span', 'tcrobe-def-popup', null, [['style', tcrobeDefPopup]], document.body);
-  pops.attributes.id = 'dapopsicle';
-
+function enrichDocument() {
   textNodes(document.body).forEach(function (el) {
     if (!toEnrich(el.nodeValue)) {
       console.log("Not enriching: " + el.nodeValue);
       return;
     }
+    observer.observe(el.parentElement);
+  });
 
-    console.log('will enrich' + el.nodeValue);
-    const fetchInfo = {
-      method: "POST",
-      cache: "no-store",
-      body: JSON.stringify({ data: el.nodeValue }),
-      headers: { "Accept": "application/json", "Content-Type": "application/json", 'Authorization': 'Bearer ' + authToken },
-    };
-
-    fetch(baseUrl + 'enrich/enrich_json', fetchInfo)
-      .then(res => res.json())
-      .then(data => {
-        enrichElement(el, data, pops);
-      }).catch((err) => {
-        console.log(err);
-      });
-  })
   document.addEventListener('click', () => {
     popups = document.getElementsByClassName("tcrobe-def-popup");  // why are there more than one again? ¯_(ツ)_/¯
     for (var i = 0; i < popups.length; i++) {
@@ -391,6 +447,7 @@ function refreshTokenAndRun(callback, canRunCallback) {
       .then(data => {
         if (data.access) {
           authToken = data.access;
+          refreshToken = data.refresh;
           fromLang = parseJwt(authToken)['lang_pair'].split(':')[0];
           callback();
         }
