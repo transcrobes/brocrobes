@@ -5,6 +5,8 @@ let fromLang = '';
 let known_words = 0;
 let unknown_words = 0;
 
+const DEFAULT_RETRIES = 3;
+
 const fetchPlus = (url, options = {}, retries) =>
   fetch(url, options)
     .then(res => {
@@ -63,7 +65,7 @@ function onEntry(entry) {
             },
           };
 
-          fetchPlus(baseUrl + 'enrich/enrich_json', fetchInfo)
+          fetchPlus(baseUrl + 'enrich/enrich_json', fetchInfo, DEFAULT_RETRIES)
             .then(data => {
               enrichElement(item, data, pops);
               change.target.dataset.tced = true;
@@ -205,7 +207,7 @@ function sendNoteToApi(apiVerb, note, addNew, target, previousImg) {
     headers: { "Accept": "application/json", "Content-Type": "application/json", 'Authorization': 'Bearer ' + authToken },
   };
 
-  fetchPlus(baseUrl + 'notes/' + apiVerb, fetchInfo)
+  fetchPlus(baseUrl + 'notes/' + apiVerb, fetchInfo, DEFAULT_RETRIES)
     .then(res => {
       const msg = document.getElementsByClassName('tcrobe-def-messages')[0];
       msg.style.display = "block";
@@ -320,6 +322,9 @@ function doCreateElement(elType, elClass, elInnerText, elAttrs, elParent) {
 function initPopup(event, popup) {
   event.stopPropagation();
   // this allows to have the popup on links and if click again then the link will activate
+  // FIXME: this should be more intelligent! Currently it considers that a click on *another*
+  // link text also means you want to follow, which is patently not true, so it should detect
+  // and prevent following when the new click is not on the same word
   if (popup.style.display == "none") event.preventDefault();
 
   // place the popup just under the clicked item
@@ -335,24 +340,70 @@ function initPopup(event, popup) {
   popup.innerHTML = '';
 }
 
+function submitUserEvent(eventType, eventData) {
+  const fetchInfo = {
+    method: "POST",
+    cache: "no-store",
+    body: JSON.stringify({ type: eventType, data: eventData }),
+    headers: {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + authToken
+    },
+  };
+
+  fetchPlus(baseUrl + 'user_event/', fetchInfo, DEFAULT_RETRIES);
+  console.log(eventType);
+  console.log(eventData);
+
+}
+
+function toggleSentenceVisible(event, pop) {
+  if (pop.style.display == "block") {
+    pop.style.display = "none";
+  } else {
+    pop.style.display = "block";
+
+    submitUserEvent('bc_sentence_lookup',
+      {
+        target_word: event.target.parentElement.dataset.word,
+        target_sentence: event.target.parentElement.dataset.sentCleaned
+      }
+    );
+  }
+
+  event.stopPropagation();
+}
+
 function populatePopup(event, popup, token) {
   initPopup(event, popup);
+
+  submitUserEvent('bc_word_lookup',
+    {
+      target_word: JSON.parse(event.target.parentElement.dataset.tcrobeEntry).word,
+      target_sentence: event.target.parentElement.parentElement.dataset.sentCleaned
+    }
+  );
 
   const defHeader = doCreateElement('div', 'tcrobe-def-header', null, [["style", tcrobeDefHeader]], popup)
   defHeader.appendChild(doCreateElement('div', 'tcrobe-def-pinyin', token['pinyin'].join(""), [['style', tcrobeDefPinyin]]));
   defHeader.appendChild(doCreateElement('div', 'tcrobe-def-best', !!(token['best_guess']) ? token['best_guess']['normalizedTarget'].split(",")[0].split(";")[0] : '', [['style', tcrobeDefBest]]));
 
   const sentButton = doCreateElement('div', 'tcrobe-def-sentbutton', null, [["style", tcrobeDefSentbutton]], defHeader);
-  const sentTrans = event.target.closest('.tcrobe-sent').dataset.sentTrans;
+  const sent = event.target.closest('.tcrobe-sent');
+  sentButton.dataset.sentCleaned = sent.dataset.sentCleaned;
+
+  sentButton.dataset.word = token['word'];
+
+  const sentTrans = sent.dataset.sentTrans;
   const popupExtras = doCreateElement('div', 'tcrobe-def-extras', null, null, popup);
   const popupSentence = doCreateElement('div', 'tcrobe-def-sentence', sentTrans, null, popupExtras);
   popupExtras.style.display = 'none';
   const popupMessages = doCreateElement('div', 'tcrobe-def-messages', null, null, popup);
   popupMessages.style.display = 'none';
 
-  function vis(event, pop) {pop.style.display = (pop.style.display == "block") ? "none" : "block"; event.stopPropagation();}
   doCreateElement('img', 'tcrobe-def-sentbutton-img', null, [["src", chrome.runtime.getURL('/img/plus.png')]], sentButton)
-    .addEventListener("click", (event) => { vis(event, popupExtras); });
+    .addEventListener("click", (event) => { toggleSentenceVisible(event, popupExtras); });
 
   const popupContainer = doCreateElement('div', 'tcrobe-def-container', null, [['style', tcrobeDefContainer]], popup);
   printInfos(token['stats'], popupContainer);
@@ -367,11 +418,11 @@ function enrichElement(element, data, pops) {
     sent.dataset.sentCleaned = s['cleaned'];
     sent.dataset.sentTrans = s['translation'];
     for (var tindex in s['tokens']) {
-      const t = s['tokens'][tindex]; // MUST NOT be var!!!! TODO: find out why!
+      const t = s['tokens'][tindex];
       const w = t['word'];
       if ('ankrobes_entry' in t) {
         const entry = doCreateElement('span', 'tcrobe-entry', null, [['style', tcrobeEntry]]);
-        entry.dataset.tcrobeEntry = t;
+        entry.dataset.tcrobeEntry = JSON.stringify(t);
         const popie = doCreateElement('span', 'tcrobe-def-popup', null, [['style', tcrobeDefPopup]]);
         entry.appendChild(popie);
         entry.addEventListener("click", function (event) { populatePopup(event, pops, t); });
