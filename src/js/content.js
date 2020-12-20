@@ -1,3 +1,12 @@
+const USER_STATS_MODE_IGNORE = -1
+const USER_STATS_MODE_UNMODIFIED = 0
+const USER_STATS_MODE_NO_GLOSS = 2  // word-segmented
+const USER_STATS_MODE_L2_SIMPLIFIED = 4  // Simpler synonym, not yet implemented
+const USER_STATS_MODE_TRANSLITERATION = 6  // Pinyin
+const USER_STATS_MODE_L1 = 8  // English
+
+let glossing = USER_STATS_MODE_IGNORE;
+
 let baseUrl = '';
 let authToken = '';
 let refreshToken = '';
@@ -57,7 +66,7 @@ function onEntry(entry) {
           const fetchInfo = {
             method: "POST",
             cache: "no-store",
-            body: JSON.stringify({ data: item.nodeValue }),
+            body: JSON.stringify({ data: item.nodeValue, userStatsMode: glossing }),
             headers: {
                 "Accept": "application/json",
                 "Content-Type": "application/json",
@@ -299,6 +308,16 @@ function printInfos(info, parentDiv) {
   } );
 }
 
+function printSynonyms(synonyms, parentDiv) {
+  // maybe show that there are none?
+  if (!(synonyms) || !(synonyms.length > 0)){ return; }
+
+  const synonymsDiv = doCreateElement('div', 'tc-synonyms', null, [['style', tcrobeStats]], parentDiv);
+
+  doCreateElement('hr', null, null, null, synonymsDiv);
+  doCreateElement('div', 'tc-synonym-list', synonyms.join(', '), null, synonymsDiv);
+}
+
 function doCreateElement(elType, elClass, elInnerText, elAttrs, elParent) {
     if (!(elType)) { throw "eltype must be an element name"; };
     const el = document.createElement(elType);
@@ -344,7 +363,7 @@ function submitUserEvent(eventType, eventData) {
   const fetchInfo = {
     method: "POST",
     cache: "no-store",
-    body: JSON.stringify({ type: eventType, data: eventData }),
+    body: JSON.stringify({ type: eventType, data: eventData, userStatsMode: glossing }),
     headers: {
         "Accept": "application/json",
         "Content-Type": "application/json",
@@ -407,6 +426,7 @@ function populatePopup(event, popup, token) {
 
   const popupContainer = doCreateElement('div', 'tcrobe-def-container', null, [['style', tcrobeDefContainer]], popup);
   printInfos(token['stats'], popupContainer);
+  printSynonyms(token['synonyms'], popupContainer);
   popupDefinitions(token, popupContainer);
 }
 
@@ -428,15 +448,32 @@ function enrichElement(element, data, pops) {
         entry.addEventListener("click", function (event) { populatePopup(event, pops, t); });
         entry.appendChild(doCreateElement('span', 'tcrobe-word', t['word'], null));
         if (!(t['ankrobes_entry']) || !(t['ankrobes_entry'].length) || t['ankrobes_entry'][0]['Is_Known'] == 0) {
-          const defin = doCreateElement('span', 'tcrobe-def', '(' + t['best_guess']['normalizedTarget'].split(",")[0].split(";")[0] + ')', null);
-          defin.dataset.tcrobeDef = t['best_guess']['normalizedTarget'].split(",")[0].split(";")[0];
-          defin.dataset.tcrobeDefId = t['word'];
-          entry.appendChild(defin);
+          let gloss = null;
+          if (glossing == USER_STATS_MODE_L1) {
+            gloss = t['best_guess']['normalizedTarget'].split(",")[0].split(";")[0];
+          } else if (glossing == USER_STATS_MODE_TRANSLITERATION) {
+            gloss = t['pinyin'].join("");
+          } else if (glossing == USER_STATS_MODE_L2_SIMPLIFIED) {
+            if (('user_synonyms' in t) && (t['user_synonyms'].length > 0)) {
+              gloss = t['user_synonyms'][0];
+            } else {
+              gloss = t['best_guess']['normalizedTarget'].split(",")[0].split(";")[0];
+            }
+          }
+          if (gloss) {
+            const defin = doCreateElement('span', 'tcrobe-def', '(' + gloss + ')', null);
+            defin.dataset.tcrobeDef = gloss;
+            // was previously defin.dataset.tcrobeDef = t['best_guess']['normalizedTarget'].split(",")[0].split(";")[0];
+            defin.dataset.tcrobeDefId = t['word'];
+            entry.appendChild(defin);
+          }
           unknown_words++;
-          console.log("Document contains " + known_words + " and " + unknown_words + ", or " + (known_words / (known_words + unknown_words)) * 100 + '% known');
+          console.log("Document contains " + known_words + " and " + unknown_words + ", or "
+            + (known_words / (known_words + unknown_words)) * 100 + '% known');
         } else {
           known_words++;
-          console.log("Document contains " + known_words + " and " + unknown_words + ", or " + (known_words / (known_words + unknown_words)) * 100 + '% known');
+          console.log("Document contains " + known_words + " and " + unknown_words + ", or "
+            + (known_words / (known_words + unknown_words)) * 100 + '% known');
         };
         sent.appendChild(entry);
       } else {
@@ -473,9 +510,11 @@ function refreshTokenAndRun(callback, canRunCallback) {
   chrome.storage.local.get({
     username: '',
     password: '',
-    baseUrl: ''
+    baseUrl: '',
+    glossing: ''
   }, function (items) {
     baseUrl = items.baseUrl + (items.baseUrl.endsWith('/') ? '' : '/');
+    glossing = items.glossing;
     const fetchInfo = {
       method: "POST",
       cache: "no-store",
