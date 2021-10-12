@@ -1,3 +1,8 @@
+Archived
+========
+
+This functionality is now available in the main repo [here](https://github.com/transcrobes/transcrobes)
+
 Brocrobes
 =========
 
